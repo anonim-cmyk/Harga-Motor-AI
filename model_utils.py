@@ -1,92 +1,40 @@
-# model_utils.py
 import joblib
+import json
 import numpy as np
 import pandas as pd
 
 def load_model(path="model.pkl"):
-    try:
-        obj = joblib.load(path)
-        
-        # Cek apakah obj adalah dictionary dengan key "pipeline"
-        if isinstance(obj, dict) and "pipeline" in obj:
-            pipeline = obj["pipeline"]
-            metadata = obj.get("metadata", {})
-        else:
-            # Kalau bukan dict, anggap obj adalah pipeline langsung
-            pipeline = obj
-            metadata = {}
-        
-        return pipeline, metadata
-    except Exception as e:
-        raise Exception(f"Error loading model: {str(e)}")
+    pipeline = joblib.load(path)
+    metadata = json.load(open("metadata.json"))
+    return pipeline, metadata
 
-def predict_single(pipeline, input_df):
-    # input_df: pandas DataFrame dengan satu baris
-    preds = pipeline.predict(input_df)
-    return preds
+def predict_single(pipeline, df):
+    return float(pipeline.predict(df)[0])
 
 def score_with_risk(pipeline, metadata, input_df, claimed_price=None):
-    """
-    Mengembalikan dict:
-    {
-      "predicted_price": float,
-      "claimed_price": float or None,
-      "residual": claimed - predicted (if claimed provided),
-      "risk_level": "Low"|"Medium"|"High",
-      "risk_score": float (0..1)
-    }
-    """
     pred = float(pipeline.predict(input_df)[0])
-    out = {"predicted_price": pred, "claimed_price": claimed_price}
 
-    # residual if claimed provided
-    if claimed_price is not None:
-        res = claimed_price - pred
-        out["residual"] = float(res)
-    else:
-        out["residual"] = None
+    if claimed_price is None:
+        return {
+            "predicted_price": pred,
+            "risk_level": "No-Claim",
+            "difference": 0
+        }
 
-    # base risk score from residual z-score
-    res_std = metadata.get("residual_std", None) or 1000000.0  # default lebih besar
-    res_mean = metadata.get("residual_mean", 0.0)
-    
-    if claimed_price is not None:
-        z = abs(((claimed_price - pred) - res_mean) / (res_std + 1e-9))
-        risk_score = min(1.0, z / 3.0)
-    else:
-        risk_score = 0.2
+    diff = claimed_price - pred
+    pct = abs(diff) / pred * 100
 
-    # feature-based adjustments
-    fscore = 0.0
-    if "year" in input_df.columns:
-        try:
-            year = int(input_df.loc[input_df.index[0], "year"])
-            import datetime
-            age = datetime.datetime.now().year - year
-            if age > 10:
-                fscore += 0.2
-            elif age > 6:
-                fscore += 0.1
-        except Exception:
-            pass
-            
-    if "km" in input_df.columns:
-        try:
-            km = float(input_df.loc[input_df.index[0], "km"])
-            if km > 150000:
-                fscore += 0.2
-            elif km > 80000:
-                fscore += 0.1
-        except Exception:
-            pass
-
-    final_score = min(1.0, risk_score + fscore)
-    if final_score < 0.3:
-        level = "Low"
-    elif final_score < 0.7:
+    if pct > 40:
+        level = "High"
+    elif pct > 15:
         level = "Medium"
     else:
-        level = "High"
+        level = "Low"
 
-    out.update({"risk_score": float(final_score), "risk_level": level})
-    return out
+    return {
+        "predicted_price": pred,
+        "claimed_price": claimed_price,
+        "difference": diff,
+        "percentage_gap": pct,
+        "risk_level": level
+    }

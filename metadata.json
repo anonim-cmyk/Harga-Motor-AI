@@ -1,0 +1,15 @@
+{
+  "numeric_cols": [
+    "tahun",
+    "odometer",
+    "pajak",
+    "konsumsiBBM",
+    "mesin"
+  ],
+  "categorical_cols": [
+    "model",
+    "transmisi",
+    "jenis"
+  ],
+  "target": "harga"
+}

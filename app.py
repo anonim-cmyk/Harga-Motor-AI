@@ -1,83 +1,94 @@
-# app.py
 import streamlit as st
 import pandas as pd
-from model_utils import load_model, predict_single, score_with_risk
-import joblib
+from model_utils import load_model, score_with_risk
 
-st.set_page_config(page_title="SPK Harga Motor Bekas", layout="wide")
+st.set_page_config(page_title="SPK Harga Motor", layout="wide")
 
-st.title("SPK Prediksi Harga Motor Bekas + Analisis Risiko")
+st.title("🛵 SPK Prediksi Harga Motor Bekas + Analisis Risiko")
 
-@st.cache_data(ttl=300)
-def load_model_cached(path="model.pkl"):
-    return load_model(path)
+@st.cache_data
+def load_cached_model():
+    return load_model("model.pkl")
+
+pipeline, metadata = load_cached_model()
+
+numeric_cols = metadata["numeric_cols"]
+categorical_cols = metadata["categorical_cols"]
 
 with st.sidebar:
-    st.header("Kontrol")
-    model_path = st.text_input("Path model .pkl", value="model.pkl")
-    uploaded = st.file_uploader("Upload CSV data (opsional)", type=["csv"])
-    st.markdown("---")
-    run_train = st.checkbox("Saya ingin menjalankan prediksi pada seluruh CSV yang diupload", value=False)
-    st.markdown("File training harus dijalankan terlebih dahulu (lihat README).")
+    st.header("📁 Input File")
+    file = st.file_uploader("Upload CSV untuk prediksi batch", type=["csv"])
+    run_batch = st.checkbox("Jalankan prediksi untuk seluruh CSV")
 
-pipeline = None
-metadata = None
-try:
-    pipeline, metadata = load_model_cached(model_path)
-except Exception as e:
-    st.sidebar.error(f"Gagal memuat model dari {model_path}: {e}")
-
-if uploaded is not None:
-    df = pd.read_csv(uploaded)
-    st.subheader("Preview data yang diupload")
+# ======================================
+# MODE BATCH (CSV)
+# ======================================
+if file:
+    df = pd.read_csv(file)
+    st.subheader("Preview Data")
     st.dataframe(df.head())
 
-    if run_train:
-        st.info("Menjalankan prediksi untuk semua baris pada file...")
+    # perbaikan kolom agar Arrow-compatible
+    for c in df.columns:
+        try:
+            df[c] = df[c].astype(str).str.replace(",", "").str.replace(" ", "")
+            df[c] = pd.to_numeric(df[c], errors="ignore")
+        except:
+            pass
+
+    if run_batch:
+        st.success("Prediksi sedang diproses...")
+
         preds = pipeline.predict(df)
         df["predicted_price"] = preds
-        st.subheader("Hasil Prediksi")
-        st.dataframe(df.head(100))
-        csv = df.to_csv(index=False)
-        st.download_button("Download hasil prediksi CSV", csv, file_name="predictions.csv")
-else:
-    st.subheader("Prediksi manual (isi form)")
-    # Build form based on metadata columns if available
-    if metadata:
-        numeric_cols = metadata.get("numeric_cols", [])
-        categorical_cols = metadata.get("categorical_cols", [])
-    else:
-        numeric_cols = ["year", "km", "engine_cc"]
-        categorical_cols = ["brand", "model", "transmission", "fuel"]
 
-    st.write("Isi fitur berikut (form adapts to kolom yang tersedia pada model).")
-    form = st.form("pred_form")
-    inputs = {}
-    for col in numeric_cols:
-        inputs[col] = form.number_input(col, value=0)
-    for col in categorical_cols:
-        inputs[col] = form.text_input(col, value="")
-    claimed_price = form.number_input("Harga yang diklaim penjual (opsional)", value=0.0)
-    submitted = form.form_submit_button("Prediksi & Analisis Risiko")
-    if submitted:
-        input_df = pd.DataFrame([inputs])
-        # cast numeric columns to numeric
+        st.subheader("Hasil Prediksi")
+        st.dataframe(df)
+
+        st.download_button(
+            "Download CSV Hasil Prediksi",
+            df.to_csv(index=False),
+            file_name="predictions.csv"
+        )
+
+else:
+    # ======================================
+    # MODE MANUAL
+    # ======================================
+    st.subheader("🔧 Prediksi Manual")
+
+    with st.form("manual_form"):
+        inputs = {}
+
+        for col in numeric_cols:
+            inputs[col] = st.number_input(col, value=0.0)
+
+        for col in categorical_cols:
+            inputs[col] = st.text_input(col)
+
+        claimed = st.number_input("Harga yang diklaim penjual (opsional)", value=0.0)
+        submit = st.form_submit_button("Prediksi")
+
+    if submit:
+        data = pd.DataFrame([inputs])
+
+        # convert numeric
         for c in numeric_cols:
-            input_df[c] = pd.to_numeric(input_df[c], errors="coerce").fillna(0)
-        st.write("Input:", input_df.T)
-        pred = float(pipeline.predict(input_df)[0])
-        st.metric("Prediksi Harga (Rp)", f"{pred:,.0f}")
-        risk = score_with_risk(pipeline, metadata, input_df, claimed_price if claimed_price>0 else None)
-        st.write("Hasil Analisis Risiko:")
+            data[c] = pd.to_numeric(data[c], errors="coerce").fillna(0)
+
+        risk = score_with_risk(pipeline, metadata, data, claimed if claimed > 0 else None)
+
+        st.metric("Prediksi Harga Motor", f"{risk['predicted_price']:,.0f} Rp")
+
+        st.subheader("Analisis Risiko")
         st.json(risk)
 
-        st.info("Rekomendasi singkat:")
+        st.info("Rekomendasi:")
         if risk["risk_level"] == "High":
-            st.write("- Harga klaim jauh dari prediksi. Hati-hati: kemungkinan penipuan atau data keliru.")
+            st.write("⚠️ Perbedaan harga sangat besar. Risiko penipuan tinggi.")
         elif risk["risk_level"] == "Medium":
-            st.write("- Harga sedikit berbeda. Perlu verifikasi lebih lanjut (foto, dokumen).")
+            st.write("⚠️ Harga agak berbeda. Perlu verifikasi lebih lanjut.")
         else:
-            st.write("- Risiko rendah. Harga sesuai ekspektasi model.")
+            st.write("✅ Harga sesuai perkiraan model. Risiko rendah.")
 
-st.markdown("---")
-st.caption("Catatan: model dan risk scoring bersifat indikatif. Gunakan verifikasi manual (dokumen/foto/test drive).")
+st.caption("Model berlaku indikatif. Tetap lakukan pengecekan manual (dokumen/foto).")
