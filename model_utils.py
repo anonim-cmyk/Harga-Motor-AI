@@ -4,10 +4,21 @@ import numpy as np
 import pandas as pd
 
 def load_model(path="model.pkl"):
-    obj = joblib.load(path)
-    pipeline = obj["pipeline"]
-    metadata = obj.get("metadata", {})
-    return pipeline, metadata
+    try:
+        obj = joblib.load(path)
+        
+        # Cek apakah obj adalah dictionary dengan key "pipeline"
+        if isinstance(obj, dict) and "pipeline" in obj:
+            pipeline = obj["pipeline"]
+            metadata = obj.get("metadata", {})
+        else:
+            # Kalau bukan dict, anggap obj adalah pipeline langsung
+            pipeline = obj
+            metadata = {}
+        
+        return pipeline, metadata
+    except Exception as e:
+        raise Exception(f"Error loading model: {str(e)}")
 
 def predict_single(pipeline, input_df):
     # input_df: pandas DataFrame dengan satu baris
@@ -24,9 +35,6 @@ def score_with_risk(pipeline, metadata, input_df, claimed_price=None):
       "risk_level": "Low"|"Medium"|"High",
       "risk_score": float (0..1)
     }
-    Risk logic:
-      - Berdasarkan residu relatif terhadap residual_std (dari training).
-      - Tambahan rules: usia motor (jika ada kolom 'year'), kilometer tinggi.
     """
     pred = float(pipeline.predict(input_df)[0])
     out = {"predicted_price": pred, "claimed_price": claimed_price}
@@ -39,18 +47,16 @@ def score_with_risk(pipeline, metadata, input_df, claimed_price=None):
         out["residual"] = None
 
     # base risk score from residual z-score
-    res_std = metadata.get("residual_std", None) or 1.0
+    res_std = metadata.get("residual_std", None) or 1000000.0  # default lebih besar
     res_mean = metadata.get("residual_mean", 0.0)
+    
     if claimed_price is not None:
-        z = abs(( (claimed_price - pred) - res_mean) / (res_std + 1e-9))
-        # map z to [0,1] via logistic-ish function
-        risk_score = min(1.0, z / 3.0)  # z ~ 3 => risk ~1
+        z = abs(((claimed_price - pred) - res_mean) / (res_std + 1e-9))
+        risk_score = min(1.0, z / 3.0)
     else:
-        # if no claimed price, risk depends on features (e.g., very old or extremely low price)
         risk_score = 0.2
 
     # feature-based adjustments
-    # attempt to detect 'year' or 'km' columns
     fscore = 0.0
     if "year" in input_df.columns:
         try:
@@ -63,6 +69,7 @@ def score_with_risk(pipeline, metadata, input_df, claimed_price=None):
                 fscore += 0.1
         except Exception:
             pass
+            
     if "km" in input_df.columns:
         try:
             km = float(input_df.loc[input_df.index[0], "km"])
